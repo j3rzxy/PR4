@@ -1,18 +1,31 @@
 package com.example.lib;
 
+import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
-public class Field {
+
+public class Field implements Serializable {
+
     public static final int SIZE = 10;
-    public static final int[] SHIP_SIZES = {4, 3, 3, 2, 2, 2, 1, 1, 1, 1};
-    public enum ShotResult { MISS, HIT, SUNK, ALREADY_SHOT }
+    private static final Random RANDOM = new Random();
+
     private final Cell[][] cells = new Cell[SIZE][SIZE];
     private final List<Ship> ships = new ArrayList<>();
-    private final Random random = new Random();
+
     public Field() {
         clear();
     }
+
+    public static List<Ship> createFleet() {
+        List<Ship> fleet = new ArrayList<>();
+        fleet.add(new Battleship());
+        for (int i = 0; i < 2; i++) fleet.add(new Cruiser());
+        for (int i = 0; i < 3; i++) fleet.add(new Destroyer());
+        for (int i = 0; i < 4; i++) fleet.add(new Boat());
+        return fleet;
+    }
+
     public void clear() {
         ships.clear();
         for (int r = 0; r < SIZE; r++) {
@@ -21,47 +34,29 @@ public class Field {
             }
         }
     }
+
     public boolean inBounds(int row, int col) {
         return row >= 0 && row < SIZE && col >= 0 && col < SIZE;
     }
+
     public Cell getCell(int row, int col) {
         return cells[row][col];
     }
+
     public List<Ship> getShips() {
         return ships;
     }
-    public void placeShipsRandomly() {
-        while (true) {
-            clear();
-            boolean ok = true;
-            for (int size : SHIP_SIZES) {
-                if (!tryPlaceShip(size)) {
-                    ok = false;
-                    break;
-                }
-            }
-            if (ok) return;
+
+    public void placeShip(Ship ship, int row, int col, boolean horizontal)
+            throws InvalidPlacementException {
+        int size = ship.getSize();
+        int endRow = row + (horizontal ? 0 : size - 1);
+        int endCol = col + (horizontal ? size - 1 : 0);
+
+        if (!inBounds(row, col) || !inBounds(endRow, endCol)) {
+            throw new InvalidPlacementException("The ship is moving beyond the boundaries of the field..");
         }
-    }
-    private boolean tryPlaceShip(int size) {
-        for (int attempt = 0; attempt < 200; attempt++) {
-            boolean horizontal = random.nextBoolean();
-            int row = random.nextInt(SIZE);
-            int col = random.nextInt(SIZE);
-            int endRow = row + (horizontal ? 0 : size - 1);
-            int endCol = col + (horizontal ? size - 1 : 0);
-            if (!inBounds(endRow, endCol)) continue;
-            if (!canPlace(row, col, size, horizontal)) continue;
-            Ship ship = new Ship(size);
-            for (int i = 0; i < size; i++) {
-                ship.addCell(cells[row + (horizontal ? 0 : i)][col + (horizontal ? i : 0)]);
-            }
-            ships.add(ship);
-            return true;
-        }
-        return false;
-    }
-    private boolean canPlace(int row, int col, int size, boolean horizontal) {
+
         for (int i = 0; i < size; i++) {
             int r = row + (horizontal ? 0 : i);
             int c = col + (horizontal ? i : 0);
@@ -70,31 +65,65 @@ public class Field {
                     int nr = r + dr;
                     int nc = c + dc;
                     if (inBounds(nr, nc) && cells[nr][nc].getState() == Cell.State.SHIP) {
-                        return false;
+                        throw new InvalidPlacementException(
+                                "The ship touches another ship. (near cell " + cells[nr][nc] + ").");
                     }
                 }
             }
         }
+
+        for (int i = 0; i < size; i++) {
+            ship.addCell(cells[row + (horizontal ? 0 : i)][col + (horizontal ? i : 0)]);
+        }
+        ships.add(ship);
+    }
+
+    public void placeShipsRandomly() {
+        do {
+            clear();
+        } while (!tryRandomFleet());
+    }
+
+    private boolean tryRandomFleet() {
+        for (Ship ship : createFleet()) {
+            boolean placed = false;
+            for (int attempt = 0; attempt < 200 && !placed; attempt++) {
+                try {
+                    placeShip(ship, RANDOM.nextInt(SIZE), RANDOM.nextInt(SIZE), RANDOM.nextBoolean());
+                    placed = true;
+                } catch (InvalidPlacementException e) {
+                    // РїСЂРѕР±СѓРµРј РґСЂСѓРіСѓСЋ РїРѕР·РёС†РёСЋ
+                }
+            }
+            if (!placed) return false;
+        }
         return true;
     }
-    public ShotResult shoot(int row, int col) {
+
+    public ShotResult shoot(int row, int col) throws RepeatedShotException {
         Cell cell = cells[row][col];
+
         if (cell.isShot()) {
-            return ShotResult.ALREADY_SHOT;
+            throw new RepeatedShotException(cell.toString());
         }
         if (cell.getState() == Cell.State.EMPTY) {
             cell.setState(Cell.State.MISS);
             return ShotResult.MISS;
         }
+
         cell.setState(Cell.State.HIT);
         Ship ship = cell.getShip();
         ship.registerHit();
         if (ship.isSunk()) {
+            for (Cell c : ship.getCells()) {
+                c.setState(Cell.State.SUNK);
+            }
             markAround(ship);
             return ShotResult.SUNK;
         }
         return ShotResult.HIT;
     }
+
     private void markAround(Ship ship) {
         for (Cell cell : ship.getCells()) {
             for (int dr = -1; dr <= 1; dr++) {
@@ -108,20 +137,22 @@ public class Field {
             }
         }
     }
+
     public boolean allShipsSunk() {
         for (Ship ship : ships) {
             if (!ship.isSunk()) return false;
         }
         return true;
     }
+
     public String[] render(boolean hideShips) {
         String[] lines = new String[SIZE + 1];
-        StringBuilder header = new StringBuilder(" ");
-        header.append("  ");
+        StringBuilder header = new StringBuilder("   ");
         for (int c = 0; c < SIZE; c++) {
             header.append((char) ('A' + c)).append(' ');
         }
         lines[0] = header.toString();
+
         for (int r = 0; r < SIZE; r++) {
             StringBuilder sb = new StringBuilder(String.format("%2d ", r + 1));
             for (int c = 0; c < SIZE; c++) {

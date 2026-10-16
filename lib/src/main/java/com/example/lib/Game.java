@@ -1,64 +1,129 @@
 package com.example.lib;
 
-public class Game {
-    private final Player player1;
-    private final Player player2;
-    private Player current;
-    private Player other;
-    public Game(Player player1, Player player2) {
-        this.player1 = player1;
-        this.player2 = player2;
-        this.current = player1;
-        this.other = player2;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
+import java.io.Serializable;
+import java.util.Scanner;
+
+/**
+ * Игровой цикл. При попадании игрок ходит снова, при промахе ход переходит.
+ * Партию можно сохранить командой save и продолжить позже.
+ */
+public class Game implements Serializable {
+
+    public static final String SAVE_FILE = "savegame.dat";
+
+    private final Player human;
+    private final AIPlayer ai;
+    private boolean humanTurn = true;
+    private boolean over;
+
+    public Game(Player human, AIPlayer ai) {
+        this.human = human;
+        this.ai = ai;
     }
-    public void start() {
-        player1.getField().placeShipsRandomly();
-        player2.getField().placeShipsRandomly();
-        System.out.println("=== Sea Battle ===");
-        System.out.println("# - your ship, X - hit, o - miss\n");
-        while (true) {
-            if (current.isHuman()) {
-                printBoards(current, other);
+
+    /** Расстановка кораблей обоими игроками. */
+    public void setup() {
+        human.placeShips();
+        ai.placeShips();
+    }
+
+    public void play() {
+        System.out.println("\n=== SEA BATTLE ===");
+        System.out.println("# - ship, X - hit, o - miss\n");
+
+        while (!over) {
+            Player current = humanTurn ? human : ai;
+            Player enemy = humanTurn ? ai : human;
+
+            if (humanTurn) {
+                printBoards(false);
             }
-            int[] target = current.chooseTarget(other.getField());
-            int row = target[0];
-            int col = target[1];
-            Field.ShotResult result = other.getField().shoot(row, col);
-            current.notifyResult(row, col, result, other.getField());
-            printResult(current, other.getField().getCell(row, col), result);
-            if (other.hasLost()) {
-                if (current.isHuman()) printBoards(current, other);
-                System.out.println("\nWon player: " + current.getName() + "!");
-                return;
+
+            int[] target = current.chooseTarget(enemy.getField(), this::saveGame);
+
+            if (current.hasSurrendered()) {
+                System.out.println("\n" + current.getName() + " gave up. Won "
+                        + enemy.getName() + "!");
+                over = true;
+                break;
             }
-            if (result == Field.ShotResult.MISS) {
-                switchPlayer();
+
+            ShotResult result;
+            try {
+                result = enemy.getField().shoot(target[0], target[1]);
+            } catch (RepeatedShotException e) {
+                System.out.println(e.getMessage() + " Choose another cell.\n");
+                continue;
+            }
+
+            current.recordShot(result);
+            System.out.println(current.getName() + " shoot in "
+                    + enemy.getField().getCell(target[0], target[1])
+                    + ": " + result.getMessage() + "!\n");
+
+            if (enemy.getField().allShipsSunk()) {
+                over = true;
+                System.out.println("Won " + current.getName() + "!\n");
+                break;
+            }
+            if (result == ShotResult.MISS) {
+                humanTurn = !humanTurn;
             }
         }
+
+        printBoards(true);
+        printStats();
+        new File(SAVE_FILE).delete();
     }
-    private void switchPlayer() {
-        Player tmp = current;
-        current = other;
-        other = tmp;
-    }
-    private void printResult(Player shooter, Cell cell, Field.ShotResult result) {
-        String text;
-        switch (result) {
-            case MISS: text = "miss"; break;
-            case HIT: text = "hit!"; break;
-            case SUNK: text = "ship is down!"; break;
-            default: text = "hitted yet"; break;
+
+    // ---------- Сохранение ----------
+
+    public void saveGame() {
+        try (ObjectOutputStream out = new ObjectOutputStream(new FileOutputStream(SAVE_FILE))) {
+            out.writeObject(this);
+            System.out.println("Game saved in " + SAVE_FILE + ".");
+        } catch (IOException e) {
+            System.out.println("Cant save game: " + e.getMessage());
         }
-        System.out.println(shooter.getName() + " shoot in  " + cell + ": " + text + "\n");
     }
-    /** Печатает два поля рядом: своё и поле противника (корабли скрыты). */
-    private void printBoards(Player me, Player enemy) {
-        String[] own = me.getField().render(false);
-        String[] foe = enemy.getField().render(true);
-        System.out.printf("%-26s%s%n", " YOUR FIELD", " ENEMY FIELD");
+
+    public static Game load(Scanner scanner) throws IOException, ClassNotFoundException {
+        try (ObjectInputStream in = new ObjectInputStream(new FileInputStream(SAVE_FILE))) {
+            Game game = (Game) in.readObject();
+            game.human.setScanner(scanner);
+            return game;
+        }
+    }
+
+    public static boolean saveExists() {
+        return new File(SAVE_FILE).exists();
+    }
+
+    // ---------- Вывод ----------
+
+    /** Два поля рядом: ваше и поле противника. reveal = true показывает все корабли. */
+    private void printBoards(boolean reveal) {
+        String[] own = human.getField().render(false);
+        String[] foe = ai.getField().render(!reveal);
+
+        System.out.printf("%-26s%s%n", "      YOUR FIELD", "     ENEMY FIELD");
         for (int i = 0; i < own.length; i++) {
             System.out.printf("%-26s%s%n", own[i], foe[i]);
         }
         System.out.println();
+    }
+
+    private void printStats() {
+        System.out.println("=== STATS ===");
+        for (Player p : new Player[]{human, ai}) {
+            System.out.printf("%s: shots %d, hits %d, accuracy %.1f%%%n",
+                    p.getName(), p.getShots(), p.getHits(), p.getAccuracy());
+        }
     }
 }

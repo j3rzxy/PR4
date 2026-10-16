@@ -1,77 +1,156 @@
 package com.example.lib;
 
-import java.util.ArrayDeque;
-import java.util.Deque;
-import java.util.Random;
+import java.io.Serializable;
 import java.util.Scanner;
+
 /**
- * Игрок: человек (ввод с консоли) или компьютер (случайные выстрелы + добивание).
+ * Игрок-человек: ручная/случайная расстановка, ввод выстрелов, статистика.
+ * От него наследуется AIPlayer.
  */
-public class Player {
+public class Player implements Serializable {
+
     private final String name;
-    private final boolean human;
-    private final Scanner scanner;
     private final Field field = new Field();
-    // Для компьютера
-    private final Random random = new Random();
-    private final Deque<int[]> targets = new ArrayDeque<>();
-    private Player(String name, boolean human, Scanner scanner) {
+    private transient Scanner scanner;
+    private int shots;
+    private int hits;
+    private boolean surrendered;
+
+    public Player(String name, Scanner scanner) {
         this.name = name;
-        this.human = human;
         this.scanner = scanner;
     }
-    public static Player human(String name, Scanner scanner) {
-        return new Player(name, true, scanner);
-    }
-    public static Player computer(String name) {
-        return new Player(name, false, null);
-    }
+
     public String getName() { return name; }
-    public boolean isHuman() { return human; }
+
     public Field getField() { return field; }
-    public boolean hasLost() {
-        return field.allShipsSunk();
-    }
-    /** Выбор клетки для выстрела по полю противника. Возвращает {row, col}. */
-    public int[] chooseTarget(Field enemy) {
-        return human ? askHuman(enemy) : chooseComputer(enemy);
-    }
-    /** Сообщить игроку результат его выстрела (нужно компьютеру для добивания). */
-    public void notifyResult(int row, int col, Field.ShotResult result, Field enemy) {
-        if (human) return;
-        if (result == Field.ShotResult.SUNK) {
-            targets.clear();
-        } else if (result == Field.ShotResult.HIT) {
-            int[][] dirs = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}};
-            for (int[] d : dirs) {
-                int nr = row + d[0];
-                int nc = col + d[1];
-                if (enemy.inBounds(nr, nc) && !enemy.getCell(nr, nc).isShot()) {
-                    targets.push(new int[]{nr, nc});
-                }
+
+    public void setScanner(Scanner scanner) { this.scanner = scanner; }
+
+    public boolean isHuman() { return true; }
+
+    public boolean hasSurrendered() { return surrendered; }
+
+    // ---------- Расстановка ----------
+
+    public void placeShips() {
+        System.out.println("\nShip place: 1 - manual, 2 - random");
+        while (true) {
+            System.out.print("Your choice: ");
+            String line = readLine();
+            if (line == null || line.trim().equals("2")) {
+                field.placeShipsRandomly();
+                return;
+            }
+            if (line.trim().equals("1")) {
+                placeManually();
+                return;
             }
         }
     }
-    // ---------- Человек ----------
-    private int[] askHuman(Field enemy) {
+
+    private void placeManually() {
+        System.out.println("Format: B5 H (H or Г - right, V or В - down). R - place all random.");
+        for (Ship ship : Field.createFleet()) {
+            while (true) {
+                printOwnField();
+                System.out.printf("%s (%d c.): ", ship.getName(), ship.getSize());
+                String line = readLine();
+                if (line == null || line.trim().equalsIgnoreCase("R")) {
+                    field.placeShipsRandomly();
+                    return;
+                }
+
+                String[] parts = line.trim().toUpperCase().split("\\s+");
+                int[] pos = parseCoordinate(parts[0]);
+                if (pos == null) {
+                    System.out.println("Wrong coordinate.");
+                    continue;
+                }
+                boolean horizontal = true;
+                if (parts.length > 1) {
+                    String d = parts[1];
+                    if (d.equals("V") || d.equals("В")) {
+                        horizontal = false;
+                    } else if (!d.equals("H") && !d.equals("Г")) {
+                        System.out.println("Side: H/Г (right) or V/В (down).");
+                        continue;
+                    }
+                }
+                try {
+                    field.placeShip(ship, pos[0], pos[1], horizontal);
+                    break;
+                } catch (InvalidPlacementException e) {
+                    System.out.println("Cant place like this: " + e.getMessage());
+                }
+            }
+        }
+        printOwnField();
+    }
+
+    private void printOwnField() {
+        System.out.println();
+        for (String line : field.render(false)) {
+            System.out.println(line);
+        }
+        System.out.println();
+    }
+
+    // ---------- Выстрелы ----------
+
+    /**
+     * Выбор цели. Возвращает {row, col} или null, если игрок сдался.
+     * Команды: save - сохранить партию, surrender - сдаться.
+     */
+    public int[] chooseTarget(Field enemy, Runnable saveAction) {
         while (true) {
-            System.out.print(name + ", enter coordinates to shoot (for exmp, B5): ");
-            String line = scanner.nextLine().trim().toUpperCase();
-            int[] target = parse(line);
-            if (target == null) {
-                System.out.println("Incorrect enter. Letter A-J and number 1-10.");
+            System.out.print(name + ", shot (for exmp B5; save - сохранить, surrender - сдаться): ");
+            String line = readLine();
+            if (line == null) {
+                surrendered = true;
+                return null;
+            }
+            line = line.trim().toUpperCase();
+
+            if (line.equals("SAVE") || line.equals("СОХРАНИТЬ")) {
+                saveAction.run();
                 continue;
             }
-            if (enemy.getCell(target[0], target[1]).isShot()) {
-                System.out.println("You hitted this cell yet.");
+            if (line.equals("SURRENDER") || line.equals("СДАТЬСЯ")) {
+                surrendered = true;
+                return null;
+            }
+
+            int[] target = parseCoordinate(line);
+            if (target == null) {
+                System.out.println("Wrong input. Letter A-J and number 1-10.");
                 continue;
             }
             return target;
         }
     }
-    private int[] parse(String s) {
-        if (s.length() < 2 || s.length() > 3) return null;
-        char letter = s.charAt(0);
+
+    // ---------- Статистика ----------
+
+    public void recordShot(ShotResult result) {
+        shots++;
+        if (result != ShotResult.MISS) hits++;
+    }
+
+    public int getShots() { return shots; }
+
+    public int getHits() { return hits; }
+
+    public double getAccuracy() {
+        return shots == 0 ? 0 : 100.0 * hits / shots;
+    }
+
+    // ---------- Вспомогательное ----------
+
+    /** "B5" -> {4, 1}; null при неверном формате. */
+    public static int[] parseCoordinate(String s) {
+        if (s == null || s.length() < 2 || s.length() > 3) return null;
+        char letter = Character.toUpperCase(s.charAt(0));
         if (letter < 'A' || letter >= 'A' + Field.SIZE) return null;
         try {
             int number = Integer.parseInt(s.substring(1));
@@ -81,22 +160,8 @@ public class Player {
             return null;
         }
     }
-    // ---------- Компьютер ----------
-    private int[] chooseComputer(Field enemy) {
-        // Сначала добиваем найденный корабль
-        while (!targets.isEmpty()) {
-            int[] t = targets.pop();
-            if (!enemy.getCell(t[0], t[1]).isShot()) {
-                return t;
-            }
-        }
-        // Иначе стреляем случайно
-        while (true) {
-            int r = random.nextInt(Field.SIZE);
-            int c = random.nextInt(Field.SIZE);
-            if (!enemy.getCell(r, c).isShot()) {
-                return new int[]{r, c};
-            }
-        }
+
+    private String readLine() {
+        return scanner.hasNextLine() ? scanner.nextLine() : null;
     }
 }
